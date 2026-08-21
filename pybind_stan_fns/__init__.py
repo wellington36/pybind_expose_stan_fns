@@ -13,12 +13,13 @@ import pybind11
 from . import preprocess
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Python / pybind11 configuration
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 def get_pybind_includes():
     """Return Python and pybind11 include directories."""
+
     dirs = [
         sysconfig.get_path("include"),
         sysconfig.get_path("platinclude"),
@@ -26,6 +27,7 @@ def get_pybind_includes():
     ]
 
     unique_dirs = []
+
     for directory in dirs:
         if directory and directory not in unique_dirs:
             unique_dirs.append(directory)
@@ -33,9 +35,9 @@ def get_pybind_includes():
     return unique_dirs
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Platform
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 SYSTEM = platform.system()
 
@@ -44,9 +46,9 @@ IS_MACOS = SYSTEM == "Darwin"
 IS_LINUX = SYSTEM == "Linux"
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # CmdStan
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 CMDSTAN = Path(cmdstanpy.cmdstan_path())
 
@@ -56,9 +58,9 @@ if IS_WINDOWS:
     STANC = STANC.with_suffix(".exe")
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Common compiler configuration
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 CPP_DEFINES = [
     "_REENTRANT",
@@ -91,9 +93,9 @@ CXX_FLAGS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# CmdStan library directories
-# ---------------------------------------------------------------------------
+# ============================================================================
+# CmdStan directories
+# ============================================================================
 
 STAN_MATH_LIB = (
     CMDSTAN
@@ -114,17 +116,17 @@ SUNDIALS_INCLUDE_DIR = SUNDIALS_DIR / "include"
 SUNDIALS_SRC_DIR = SUNDIALS_DIR / "src" / "sundials"
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Platform-specific compiler/linker configuration
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 LDFLAGS = []
 LDLIBS = []
 
 
-# ===========================================================================
-# WINDOWS
-# ===========================================================================
+# ============================================================================
+# Windows
+# ============================================================================
 
 if IS_WINDOWS:
 
@@ -134,10 +136,6 @@ if IS_WINDOWS:
         "_BOOST_LGAMMA",
         "TBB_INTERFACE_NEW",
     ])
-
-    # -----------------------------------------------------------------------
-    # Conda environment
-    # -----------------------------------------------------------------------
 
     conda_prefix = os.environ.get("CONDA_PREFIX")
 
@@ -152,106 +150,95 @@ if IS_WINDOWS:
     CONDA_INCLUDE = CONDA_PATH / "Library" / "include"
     CONDA_LIB = CONDA_PATH / "Library" / "lib"
 
-    OTHER_INCLUDES.append(os.fspath(CONDA_INCLUDE))
-
-
-    # -----------------------------------------------------------------------
-    # Find the Python import library
-    # -----------------------------------------------------------------------
-    #
-    # IMPORTANT:
-    #
-    # Do not use sysconfig.get_config_var("LIBRARY") directly.
-    #
-    # On Windows/Conda it may return:
-    #
-    #     python3.lib
-    #
-    # while the actual file is:
-    #
-    #     python312.lib
-    #
-    # or:
-    #
-    #     python310.lib
-    #
-    # We therefore construct the expected versioned name ourselves and
-    # verify that the file exists.
-    # -----------------------------------------------------------------------
-
-    python_version = (
-        f"python{sys.version_info.major}{sys.version_info.minor}.lib"
+    OTHER_INCLUDES.append(
+        os.fspath(CONDA_INCLUDE)
     )
 
-    python_lib_candidates = [
-        CONDA_PATH / "libs" / python_version,
-        Path(sys.prefix) / "libs" / python_version,
-        Path(sys.base_prefix) / "libs" / python_version,
-    ]
+    # ------------------------------------------------------------------------
+    # Python import library
+    #
+    # Examples:
+    #
+    #   C:/Miniconda/envs/windows/libs/python310.lib
+    #   C:/Miniconda/envs/windows/libs/python311.lib
+    #   C:/Miniconda/envs/windows/libs/python312.lib
+    #   C:/Miniconda/envs/windows/libs/python313.lib
+    # ------------------------------------------------------------------------
+
+    python_lib_dirs = []
+
+    # sysconfig is preferred because it belongs to the Python currently
+    # running the tests.
+    sysconfig_libdir = sysconfig.get_config_var("LIBDIR")
+
+    if sysconfig_libdir:
+        python_lib_dirs.append(Path(sysconfig_libdir))
+
+    # Conda's standard Windows location.
+    python_lib_dirs.append(
+        CONDA_PATH / "libs"
+    )
 
     python_lib = None
 
-    for candidate in python_lib_candidates:
-        if candidate.exists():
-            python_lib = candidate
+    for lib_dir in python_lib_dirs:
+
+        if not lib_dir.exists():
+            continue
+
+        # Prefer the exact Python version currently running.
+        version = sysconfig.get_python_version()
+
+        exact = lib_dir / f"python{version.replace('.', '')}.lib"
+
+        if exact.exists():
+            python_lib = exact
             break
 
-    # -----------------------------------------------------------------------
-    # Fallback: search the usual Python library directories.
-    # -----------------------------------------------------------------------
+        # Fallback.
+        candidates = sorted(lib_dir.glob("python*.lib"))
 
-    if python_lib is None:
-
-        possible_dirs = [
-            CONDA_PATH / "libs",
-            Path(sys.prefix) / "libs",
-            Path(sys.base_prefix) / "libs",
-        ]
-
-        for directory in possible_dirs:
-            if not directory.exists():
-                continue
-
-            candidates = sorted(
-                directory.glob(
-                    f"python{sys.version_info.major}*.lib"
-                )
-            )
-
-            # Prefer the exact major/minor version.
-            exact = [
-                candidate
-                for candidate in candidates
-                if candidate.name.lower() == python_version.lower()
-            ]
-
-            if exact:
-                python_lib = exact[0]
-                break
-
-            if candidates:
-                python_lib = candidates[0]
-                break
-
+        if candidates:
+            python_lib = candidates[0]
+            break
 
     if python_lib is None:
         raise RuntimeError(
             "Could not find Python import library.\n"
-            f"Python: {sys.version}\n"
-            f"Expected: {python_version}\n"
-            f"Searched:\n"
+            f"Python executable: {sys.executable}\n"
+            f"Python version: {sys.version}\n"
+            f"CONDA_PREFIX: {CONDA_PATH}\n"
+            "Searched:\n"
             + "\n".join(
-                f"  {path}"
-                for path in python_lib_candidates
+                f"  {directory}"
+                for directory in python_lib_dirs
             )
         )
 
     PYTHON_LIB_DIR = python_lib.parent
 
+    # ------------------------------------------------------------------------
+    # Windows shared-library build
+    #
+    # IMPORTANT:
+    #
+    # A .pyd is a DLL/shared library, NOT an executable.
+    #
+    # Without -shared, clang++ invokes the linker as if it were producing
+    # an executable and LNK1561 asks for an entry point.
+    # ------------------------------------------------------------------------
 
-    # -----------------------------------------------------------------------
-    # Windows linker paths
-    # -----------------------------------------------------------------------
+    CXX_FLAGS.extend([
+        "-shared",
+    ])
+
+    # ------------------------------------------------------------------------
+    # Include paths
+    # ------------------------------------------------------------------------
+
+    # ------------------------------------------------------------------------
+    # Linker search paths
+    # ------------------------------------------------------------------------
 
     LDFLAGS.extend([
         f"-L{PYTHON_LIB_DIR}",
@@ -259,15 +246,15 @@ if IS_WINDOWS:
         f"-L{SUNDIALS_LIB_DIR}",
     ])
 
-
-    # -----------------------------------------------------------------------
-    # Windows libraries
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # Libraries
     #
-    # Pass the Python import library using its ABSOLUTE PATH.
+    # Use the exact Python import library rather than:
     #
-    # This avoids clang trying to find a nonexistent "python3.lib".
-    # -----------------------------------------------------------------------
+    #     -lpython
+    #
+    # This avoids Python 3.10/3.11/3.12/3.13/3.14 naming problems.
+    # ------------------------------------------------------------------------
 
     LDLIBS.extend([
         os.fspath(python_lib),
@@ -276,9 +263,9 @@ if IS_WINDOWS:
     ])
 
 
-# ===========================================================================
-# MACOS
-# ===========================================================================
+# ============================================================================
+# macOS
+# ============================================================================
 
 elif IS_MACOS:
 
@@ -292,11 +279,6 @@ elif IS_MACOS:
         "dynamic_lookup",
     ])
 
-
-    # -----------------------------------------------------------------------
-    # Additional CmdStan includes
-    # -----------------------------------------------------------------------
-
     CMDSTAN_SUB_INCLUDES.extend([
         (
             "stan",
@@ -325,11 +307,6 @@ elif IS_MACOS:
         ),
     ])
 
-
-    # -----------------------------------------------------------------------
-    # Library search paths
-    # -----------------------------------------------------------------------
-
     LDFLAGS.extend([
         f"-L{TBB_DIR}",
         f"-L{SUNDIALS_LIB_DIR}",
@@ -337,17 +314,11 @@ elif IS_MACOS:
         f"-Wl,-rpath,{SUNDIALS_LIB_DIR}",
     ])
 
-
-    # -----------------------------------------------------------------------
-    # Vendored TBB
-    # -----------------------------------------------------------------------
-
     tbb_library = TBB_DIR / "libtbb.dylib"
 
     if not tbb_library.exists():
         raise RuntimeError(
-            f"Could not find vendored TBB library:\n"
-            f"  {tbb_library}"
+            f"Could not find vendored TBB library: {tbb_library}"
         )
 
     LDLIBS.extend([
@@ -356,9 +327,9 @@ elif IS_MACOS:
     ])
 
 
-# ===========================================================================
-# LINUX
-# ===========================================================================
+# ============================================================================
+# Linux
+# ============================================================================
 
 elif IS_LINUX:
 
@@ -370,11 +341,6 @@ elif IS_LINUX:
         "-shared",
     ])
 
-
-    # -----------------------------------------------------------------------
-    # Additional CmdStan includes
-    # -----------------------------------------------------------------------
-
     CMDSTAN_SUB_INCLUDES.extend([
         (
             "stan",
@@ -403,11 +369,6 @@ elif IS_LINUX:
         ),
     ])
 
-
-    # -----------------------------------------------------------------------
-    # Library search paths
-    # -----------------------------------------------------------------------
-
     LDFLAGS.extend([
         f"-L{TBB_DIR}",
         f"-L{SUNDIALS_LIB_DIR}",
@@ -415,17 +376,12 @@ elif IS_LINUX:
         f"-Wl,-rpath,{SUNDIALS_LIB_DIR}",
     ])
 
-
-    # -----------------------------------------------------------------------
-    # CmdStan 2.39 TBB
-    # -----------------------------------------------------------------------
-
+    # CmdStan 2.39 / TBB 2020.3
     tbb_library = TBB_DIR / "libtbb.so.2"
 
     if not tbb_library.exists():
         raise RuntimeError(
-            f"Could not find vendored TBB library:\n"
-            f"  {tbb_library}"
+            f"Could not find vendored TBB library: {tbb_library}"
         )
 
     LDLIBS.extend([
@@ -434,10 +390,6 @@ elif IS_LINUX:
     ])
 
 
-# ===========================================================================
-# Unsupported platform
-# ===========================================================================
-
 else:
 
     raise RuntimeError(
@@ -445,9 +397,9 @@ else:
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Include paths
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 CMDSTAN_INCLUDE_PATHS = [
     os.fspath(CMDSTAN.joinpath(*sub))
@@ -467,9 +419,9 @@ CPP_FLAGS = (
 )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Python extension suffix
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 EXT_SUFFIX = sysconfig.get_config_var("EXT_SUFFIX")
 
@@ -479,40 +431,39 @@ if not EXT_SUFFIX:
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Diagnostics
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 def _print_build_configuration():
-    """Print useful information when compilation fails."""
+    """Print useful build information when compilation fails."""
 
     print(
         "\n"
         "========== pybind_stan_fns build configuration =========="
     )
 
-    print(f"Platform:         {SYSTEM}")
-    print(f"Architecture:     {platform.machine()}")
-    print(f"Python:           {sys.version}")
-    print(f"Python executable:{sys.executable}")
-    print(f"Python prefix:    {sys.prefix}")
-    print(f"Compiler:         {CXX}")
-    print(f"CmdStan:          {CMDSTAN}")
-    print(f"TBB directory:    {TBB_DIR}")
-    print(f"SUNDIALS library: {SUNDIALS_LIB_DIR}")
-    print(f"Extension suffix: {EXT_SUFFIX}")
+    print(f"Platform:          {SYSTEM}")
+    print(f"Architecture:      {platform.machine()}")
+    print(f"Python executable: {sys.executable}")
+    print(f"Python version:    {platform.python_version()}")
+    print(f"Python prefix:     {sys.prefix}")
+    print(f"Compiler:          {CXX}")
+    print(f"CmdStan:           {CMDSTAN}")
+    print(f"TBB directory:     {TBB_DIR}")
+    print(f"Extension suffix:  {EXT_SUFFIX}")
 
     if IS_WINDOWS:
-        print(f"Python lib:       {python_lib}")
+        print(f"Python library:    {python_lib}")
 
     print(
         "==========================================================\n"
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # Build
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 def expose(file: str):
     """
@@ -531,10 +482,9 @@ def expose(file: str):
             f"Stan file does not exist: {file_path}"
         )
 
-
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
     # 1. Run stanc
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
 
     cpp_pre = file_path.with_suffix(".cpp-pre")
 
@@ -551,10 +501,9 @@ def expose(file: str):
         check=True,
     )
 
-
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
     # 2. Preprocess generated C++
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
 
     cpp_file = file_path.with_suffix(".cpp")
 
@@ -563,17 +512,15 @@ def expose(file: str):
         out=os.fspath(cpp_file),
     )
 
-
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
     # 3. Output extension
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
 
     extension_file = file_path.with_suffix(EXT_SUFFIX)
 
-
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
     # 4. Compile + link
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
 
     compile_command = (
         [CXX]
@@ -588,7 +535,6 @@ def expose(file: str):
         + LDLIBS
     )
 
-
     print("\nBuild command:")
     print(
         " ".join(
@@ -598,14 +544,12 @@ def expose(file: str):
     )
     print()
 
-
     result = subprocess.run(
         compile_command,
         check=False,
         capture_output=True,
         text=True,
     )
-
 
     if result.returncode != 0:
 
@@ -626,14 +570,13 @@ def expose(file: str):
             + result.stderr
         )
 
-
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
     # 5. Import generated module
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
 
-    sys.path.insert(
-        0,
-        os.fspath(file_path.parent),
-    )
+    module_dir = os.fspath(file_path.parent)
+
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
 
     return importlib.import_module(file_path.stem)
