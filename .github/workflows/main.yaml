@@ -16,13 +16,14 @@ env:
 
 jobs:
   test-package:
-    name: tests
-    runs-on: ${{matrix.os}}
+    name: tests-${{ matrix.os }}-py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.10", 3.11, 3.12, 3.13, 3.14]
-      fail-fast: false
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Check out github
@@ -38,32 +39,113 @@ jobs:
           python -m pip install --upgrade pip wheel
           pip install -e .[test]
 
-      - name: CmdStan installation cacheing
+      - name: CmdStan installation cache
         uses: actions/cache@v4
         id: cmdstan-cache
         with:
           path: ~/.cmdstan
           key: ${{ runner.os }}-cmdstan-${{ env.CMDSTAN_VERSION }}-${{ env.CACHE_NUMBER }}
 
-      - name: Delete precompiled header (MacOS)
-        if: matrix.os == 'macos-latest' && steps.cmdstan-cache.outputs.cache-hit == 'true'
-        run: rm -rf ~/.cmdstan/cmdstan-${{ env.CMDSTAN_VERSION }}/stan/src/stan/model/*.hpp.gch
+      - name: Delete precompiled header (macOS)
+        if: runner.os == 'macOS' && steps.cmdstan-cache.outputs.cache-hit == 'true'
+        run: |
+          rm -rf ~/.cmdstan/cmdstan-${{ env.CMDSTAN_VERSION }}/stan/src/stan/model/*.hpp.gch
 
       - name: Install CmdStan
         run: |
-          install_cmdstan --version "${{ env.CMDSTAN_VERSION }}" --cores 2 --verbose
+          install_cmdstan \
+            --version "${{ env.CMDSTAN_VERSION }}" \
+            --cores 2 \
+            --verbose
+
+      # ---------------------------------------------------------
+      # macOS diagnostics
+      # ---------------------------------------------------------
+
+      - name: Check macOS architecture
+        if: runner.os == 'macOS'
+        run: |
+          echo "Runner architecture:"
+          uname -m
+
+          echo "Python architecture:"
+          python -c "import platform; print(platform.machine())"
+
+          echo "Python:"
+          python --version
+
+          echo "Compiler:"
+          clang++ --version
+
+      - name: Inspect CmdStan TBB
+        if: runner.os == 'macOS'
+        run: |
+          python - <<'PY'
+          import cmdstanpy
+          from pathlib import Path
+
+          cmdstan = Path(cmdstanpy.cmdstan_path())
+          tbb = cmdstan / "stan/lib/stan_math/lib/tbb"
+
+          print("CmdStan:", cmdstan)
+          print("TBB directory:", tbb)
+          print()
+
+          if not tbb.exists():
+              raise RuntimeError(f"TBB directory does not exist: {tbb}")
+
+          print("TBB files:")
+          for path in sorted(tbb.iterdir()):
+              print(" ", path.name)
+          PY
+
+      - name: Inspect macOS TBB libraries
+        if: runner.os == 'macOS'
+        run: |
+          TBB_DIR="$(python - <<'PY'
+          import cmdstanpy
+          from pathlib import Path
+          print(Path(cmdstanpy.cmdstan_path()) / "stan/lib/stan_math/lib/tbb")
+          PY
+          )"
+
+          echo "TBB_DIR=$TBB_DIR"
+          echo
+
+          for lib in "$TBB_DIR"/*.dylib; do
+            echo "========================================"
+            echo "$lib"
+            echo "========================================"
+
+            file "$lib"
+
+            echo
+            echo "Dependencies:"
+            otool -L "$lib"
+
+            echo
+            echo "TBB symbols:"
+            nm -gU "$lib" | grep -E \
+              'allocate_via_handler|deallocate_via_handler|task_scheduler_observer' \
+              || true
+
+            echo
+          done
+
+      # ---------------------------------------------------------
 
       - name: Run tests
         run: |
           pytest -v
 
   test-package-windows:
-    name: tests-windows
+    name: tests-windows-py${{ matrix.python-version }}
     runs-on: windows-latest
+
     strategy:
-      matrix:
-        python-version: ["3.10", 3.11, 3.12, 3.13, 3.14]
       fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Check out github
@@ -75,11 +157,10 @@ jobs:
           CACHE_NUMBER: 0
         with:
           path: ~/conda_pkgs_dir
-          key:
-            ${{ runner.os }}-conda-${{ env.CACHE_NUMBER }}-${{
-            hashFiles('.github/windows-env.yml') }}
+          key: ${{ runner.os }}-conda-${{ env.CACHE_NUMBER }}-${{ hashFiles('.github/windows-env.yml') }}
 
-      - uses: conda-incubator/setup-miniconda@v3
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
         with:
           python-version: ${{ matrix.python-version }}
           mamba-version: "*"
