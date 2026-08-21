@@ -103,21 +103,16 @@ else:
     if platform.system() == "Darwin":
         CXX = "clang++"
 
-        # Find the vendored TBB library on macOS.
-        tbb_libraries = list(TBB_DIR.glob("*.dylib"))
-
-        if tbb_libraries:
-            TBB_LIBRARY = tbb_libraries[0]
-        else:
+        if not (TBB_DIR / "libtbb.dylib").exists():
             raise RuntimeError(
-                f"Could not find vendored TBB library in {TBB_DIR}"
+                f"Could not find vendored TBB library: "
+                f"{TBB_DIR / 'libtbb.dylib'}"
             )
-        
-        
+
         LDLIBS = [
-        	os.fspath(TBB_LIBRARY),
-        	*[f"-l{lib}" for lib in LIBRARIES],
-		]
+            *[f"-l{lib}" for lib in LIBRARIES],
+            "-ltbb",
+        ]
 
     else:
         # Linux: CmdStan 2.39 vendors TBB 2020.3 as libtbb.so.2.
@@ -129,8 +124,8 @@ else:
             )
 
         LDLIBS = [
-            os.fspath(TBB_LIBRARY),
             *[f"-l{lib}" for lib in LIBRARIES],
+            os.fspath(TBB_LIBRARY),
         ]
 
 
