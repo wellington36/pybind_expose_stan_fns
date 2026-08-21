@@ -72,10 +72,11 @@ if platform.system() == "Windows":
     OTHER_INCLUDES.append(
         os.fspath(CONDA_PATH / "Library" / "include")
     )
-    LDFLAGS = [
-        f'-Wl,/LIBPATH:{CONDA_PATH / "Library" / "lib"}',
-        f'-Wl,/LIBPATH:{CONDA_PATH / "libs"}',
-    ]
+	LDFLAGS = [
+	    f"-Wl,-L,{CMDSTAN}/stan/lib/stan_math/lib/tbb",
+	    f"-Wl,-L,{CMDSTAN}/stan/lib/stan_math/lib/sundials_6.1.1/lib",
+	    f"-Wl,-rpath,{CMDSTAN}/stan/lib/stan_math/lib/tbb",
+	]
 
     # Windows uses the Conda TBB installation.
     LDLIBS = [f"-l{lib}" for lib in LIBRARIES] + ["-ltbb"]
@@ -101,7 +102,6 @@ else:
 
     if platform.system() == "Darwin":
         CXX = "clang++"
-        CXX_FLAGS.extend(["-undefined", "dynamic_lookup"])
 
         # Find the vendored TBB library on macOS.
         tbb_libraries = list(TBB_DIR.glob("*.dylib"))
@@ -113,10 +113,10 @@ else:
                 f"Could not find vendored TBB library in {TBB_DIR}"
             )
 
-        LDLIBS = [
-            os.fspath(TBB_LIBRARY),
-            *[f"-l{lib}" for lib in LIBRARIES],
-        ]
+		LDLIBS = [
+		    os.fspath(TBB_LIBRARY),
+		    *[f"-l{lib}" for lib in LIBRARIES],
+		]
 
     else:
         # Linux: CmdStan 2.39 vendors TBB 2020.3 as libtbb.so.2.
@@ -179,20 +179,10 @@ def expose(file: str):
         + LDLIBS
     )
 
-    res = subprocess.run(
-        compile_command,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    res = subprocess.run(compile_command, check=False, capture_output=True, text=True)
 
     if res.returncode:
-        raise RuntimeError(
-            "Build failed!\n"
-            + " ".join(compile_command)
-            + "\n"
-            + res.stderr
-        )
+        raise RuntimeError("Build failed!\n" + " ".join(compile_command) + "\n" + res.stderr)
 
     sys.path.append(os.fspath(file_path.parent))
 
