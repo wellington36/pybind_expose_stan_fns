@@ -67,15 +67,11 @@ TBB_DIR = CMDSTAN / "stan" / "lib" / "stan_math" / "lib" / "tbb"
 if platform.system() == "Windows":
     CXX = "clang++.exe"
     STANC = STANC.with_suffix(".exe")
-
     CPP_DEFINES.extend(["_BOOST_LGAMMA", "TBB_INTERFACE_NEW"])
-
     CONDA_PATH = Path(os.environ["CONDA_PREFIX"])
-
     OTHER_INCLUDES.append(
         os.fspath(CONDA_PATH / "Library" / "include")
     )
-
     LDFLAGS = [
         f'-Wl,/LIBPATH:{CONDA_PATH / "Library" / "lib"}',
         f'-Wl,/LIBPATH:{CONDA_PATH / "libs"}',
@@ -98,23 +94,8 @@ else:
     CMDSTAN_SUB_INCLUDES.extend(
         [
             ("stan", "lib", "stan_math", "lib", "tbb_2020.3", "include"),
-            (
-                "stan",
-                "lib",
-                "stan_math",
-                "lib",
-                "sundials_6.1.1",
-                "include",
-            ),
-            (
-                "stan",
-                "lib",
-                "stan_math",
-                "lib",
-                "sundials_6.1.1",
-                "src",
-                "sundials",
-            ),
+            ("stan", "lib", "stan_math", "lib", "sundials_6.1.1", "include"),
+            ("stan", "lib", "stan_math", "lib", "sundials_6.1.1", "src", "sundials"),
         ]
     )
 
@@ -159,9 +140,7 @@ CMDSTAN_INCLUDE_PATHS = [
 
 CPP_FLAGS = [f"-D{define}" for define in CPP_DEFINES] + [
     f"-I{path}"
-    for path in CMDSTAN_INCLUDE_PATHS
-    + OTHER_INCLUDES
-    + get_pybind_includes()
+	for path in CMDSTAN_INCLUDE_PATHS + OTHER_INCLUDES + get_pybind_includes()
 ]
 
 EXT_SUFFIX = sysconfig.get_config_var("EXT_SUFFIX")
@@ -170,7 +149,7 @@ EXT_SUFFIX = sysconfig.get_config_var("EXT_SUFFIX")
 def expose(file: str):
     file_path = Path(file).resolve()
 
-    # Create .cpp file and add pybind-specific code.
+    # create .cpp file and add pybind specific code
     subprocess.run(
         [
             os.fspath(STANC),
@@ -187,7 +166,7 @@ def expose(file: str):
         out=os.fspath(file_path.parent / file_path.with_suffix(".cpp")),
     )
 
-    # Invoke compiler.
+    # invoke compiler
     compile_command = (
         [CXX]
         + CXX_FLAGS
