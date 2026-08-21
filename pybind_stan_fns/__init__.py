@@ -56,7 +56,6 @@ CXX_FLAGS = [
     "-Wno-sign-compare",
     "-Wno-deprecated-builtins",
     "-Wno-ignored-attributes",
-    "-shared",
 ]
 
 CXX = "g++"
@@ -102,6 +101,7 @@ else:
 
     if platform.system() == "Darwin":
         CXX = "clang++"
+        CXX_FLAGS.append("-dynamiclib")
 
         if not (TBB_DIR / "libtbb.dylib").exists():
             raise RuntimeError(
@@ -117,6 +117,7 @@ else:
     else:
         # Linux: CmdStan 2.39 vendors TBB 2020.3 as libtbb.so.2.
         TBB_LIBRARY = TBB_DIR / "libtbb.so.2"
+        CXX_FLAGS.append("-shared")
 
         if not TBB_LIBRARY.exists():
             raise RuntimeError(
