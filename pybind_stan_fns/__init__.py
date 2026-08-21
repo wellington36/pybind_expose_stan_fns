@@ -13,68 +13,34 @@ import pybind11
 from . import preprocess
 
 
-# ============================================================================
-# Python / pybind11 configuration
-# ============================================================================
-
-def get_pybind_includes():
-    """Return Python and pybind11 include directories."""
-
-    dirs = [
-        sysconfig.get_path("include"),
-        sysconfig.get_path("platinclude"),
-        pybind11.get_include(),
-    ]
-
-    unique_dirs = []
-
-    for directory in dirs:
-        if directory and directory not in unique_dirs:
-            unique_dirs.append(directory)
-
-    return unique_dirs
-
-
-# ============================================================================
-# Platform
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Basic configuration
+# ---------------------------------------------------------------------------
 
 SYSTEM = platform.system()
-
-IS_WINDOWS = SYSTEM == "Windows"
-IS_MACOS = SYSTEM == "Darwin"
-IS_LINUX = SYSTEM == "Linux"
-
-
-# ============================================================================
-# CmdStan
-# ============================================================================
-
 CMDSTAN = Path(cmdstanpy.cmdstan_path())
-
 STANC = CMDSTAN / "bin" / "stanc"
-
-if IS_WINDOWS:
+if SYSTEM == "Windows":
     STANC = STANC.with_suffix(".exe")
 
+STAN_MATH = CMDSTAN / "stan" / "lib" / "stan_math"
+STAN_LIB = STAN_MATH / "lib"
+TBB_DIR = STAN_LIB / "tbb"
+SUNDIALS_DIR = STAN_LIB / "sundials_6.1.1"
+SUNDIALS_LIB = SUNDIALS_DIR / "lib"
 
-# ============================================================================
-# Common compiler configuration
-# ============================================================================
+CPP_DEFINES = ["_REENTRANT", "BOOST_DISABLE_ASSERTS"]
+LIBRARIES = ["sundials_nvecserial", "sundials_cvodes",
+             "sundials_idas", "sundials_kinsol"]
 
-CPP_DEFINES = [
-    "_REENTRANT",
-    "BOOST_DISABLE_ASSERTS",
+CXX_FLAGS = [
+    "-std=c++17", "-O3",
+    "-Wno-sign-compare",
+    "-Wno-deprecated-builtins",
+    "-Wno-ignored-attributes",
 ]
 
-LIBRARIES = [
-    "sundials_nvecserial",
-    "sundials_cvodes",
-    "sundials_idas",
-    "sundials_kinsol",
-]
-
-CMDSTAN_SUB_INCLUDES = [
+INCLUDE_PARTS = [
     ("stan", "src"),
     ("stan", "lib", "rapidjson_1.1.0"),
     ("stan", "lib", "stan_math"),
@@ -82,501 +48,202 @@ CMDSTAN_SUB_INCLUDES = [
     ("stan", "lib", "stan_math", "lib", "boost_1.87.0"),
 ]
 
-OTHER_INCLUDES = []
-
-CXX_FLAGS = [
-    "-std=c++17",
-    "-O3",
-    "-Wno-sign-compare",
-    "-Wno-deprecated-builtins",
-    "-Wno-ignored-attributes",
-]
-
-
-# ============================================================================
-# CmdStan directories
-# ============================================================================
-
-STAN_MATH_LIB = (
-    CMDSTAN
-    / "stan"
-    / "lib"
-    / "stan_math"
-    / "lib"
-)
-
-TBB_DIR = STAN_MATH_LIB / "tbb"
-
-SUNDIALS_DIR = STAN_MATH_LIB / "sundials_6.1.1"
-
-SUNDIALS_LIB_DIR = SUNDIALS_DIR / "lib"
-
-SUNDIALS_INCLUDE_DIR = SUNDIALS_DIR / "include"
-
-SUNDIALS_SRC_DIR = SUNDIALS_DIR / "src" / "sundials"
-
-
-# ============================================================================
-# Platform-specific compiler/linker configuration
-# ============================================================================
-
 LDFLAGS = []
 LDLIBS = []
+EXTRA_INCLUDES = []
 
 
-# ============================================================================
-# Windows
-# ============================================================================
+def pybind_includes():
+    """Return unique Python/pybind11 include directories."""
+    paths = [
+        sysconfig.get_path("include"),
+        sysconfig.get_path("platinclude"),
+        pybind11.get_include(),
+    ]
+    return list(dict.fromkeys(p for p in paths if p))
 
-if IS_WINDOWS:
 
+def find_python_library(conda_path):
+    """Find the import library for the running Python on Windows."""
+    version = sysconfig.get_python_version().replace(".", "")
+    search = []
+
+    if libdir := sysconfig.get_config_var("LIBDIR"):
+        search.append(Path(libdir))
+    search.append(conda_path / "libs")
+
+    for directory in search:
+        exact = directory / f"python{version}.lib"
+        if exact.exists():
+            return exact
+
+        candidates = sorted(directory.glob("python*.lib"))
+        if candidates:
+            return candidates[0]
+
+    raise RuntimeError(
+        "Could not find Python import library.\n"
+        f"Python: {sys.executable}\n"
+        f"Version: {sys.version}\n"
+        f"Searched: {search}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Platform-specific configuration
+# ---------------------------------------------------------------------------
+
+if SYSTEM == "Windows":
     CXX = "clang++.exe"
 
-    CPP_DEFINES.extend([
-        "_BOOST_LGAMMA",
-        "TBB_INTERFACE_NEW",
-    ])
+    CPP_DEFINES += ["_BOOST_LGAMMA", "TBB_INTERFACE_NEW"]
+    CXX_FLAGS += ["-shared"]
 
-    conda_prefix = os.environ.get("CONDA_PREFIX")
+    conda = os.environ.get("CONDA_PREFIX")
+    if not conda:
+        raise RuntimeError("CONDA_PREFIX is not set.")
 
-    if not conda_prefix:
-        raise RuntimeError(
-            "CONDA_PREFIX is not set. "
-            "The Windows build requires a Conda environment."
-        )
-
-    CONDA_PATH = Path(conda_prefix)
-
+    CONDA_PATH = Path(conda)
     CONDA_INCLUDE = CONDA_PATH / "Library" / "include"
     CONDA_LIB = CONDA_PATH / "Library" / "lib"
 
-    OTHER_INCLUDES.append(
-        os.fspath(CONDA_INCLUDE)
-    )
+    EXTRA_INCLUDES.append(os.fspath(CONDA_INCLUDE))
 
-    # ------------------------------------------------------------------------
-    # Python import library
-    #
-    # Examples:
-    #
-    #   C:/Miniconda/envs/windows/libs/python310.lib
-    #   C:/Miniconda/envs/windows/libs/python311.lib
-    #   C:/Miniconda/envs/windows/libs/python312.lib
-    #   C:/Miniconda/envs/windows/libs/python313.lib
-    # ------------------------------------------------------------------------
+    python_lib = find_python_library(CONDA_PATH)
 
-    python_lib_dirs = []
-
-    # sysconfig is preferred because it belongs to the Python currently
-    # running the tests.
-    sysconfig_libdir = sysconfig.get_config_var("LIBDIR")
-
-    if sysconfig_libdir:
-        python_lib_dirs.append(Path(sysconfig_libdir))
-
-    # Conda's standard Windows location.
-    python_lib_dirs.append(
-        CONDA_PATH / "libs"
-    )
-
-    python_lib = None
-
-    for lib_dir in python_lib_dirs:
-
-        if not lib_dir.exists():
-            continue
-
-        # Prefer the exact Python version currently running.
-        version = sysconfig.get_python_version()
-
-        exact = lib_dir / f"python{version.replace('.', '')}.lib"
-
-        if exact.exists():
-            python_lib = exact
-            break
-
-        # Fallback.
-        candidates = sorted(lib_dir.glob("python*.lib"))
-
-        if candidates:
-            python_lib = candidates[0]
-            break
-
-    if python_lib is None:
-        raise RuntimeError(
-            "Could not find Python import library.\n"
-            f"Python executable: {sys.executable}\n"
-            f"Python version: {sys.version}\n"
-            f"CONDA_PREFIX: {CONDA_PATH}\n"
-            "Searched:\n"
-            + "\n".join(
-                f"  {directory}"
-                for directory in python_lib_dirs
-            )
-        )
-
-    PYTHON_LIB_DIR = python_lib.parent
-
-    # ------------------------------------------------------------------------
-    # Windows shared-library build
-    #
-    # IMPORTANT:
-    #
-    # A .pyd is a DLL/shared library, NOT an executable.
-    #
-    # Without -shared, clang++ invokes the linker as if it were producing
-    # an executable and LNK1561 asks for an entry point.
-    # ------------------------------------------------------------------------
-
-    CXX_FLAGS.extend([
-        "-shared",
-    ])
-
-    # ------------------------------------------------------------------------
-    # Include paths
-    # ------------------------------------------------------------------------
-
-    # ------------------------------------------------------------------------
-    # Linker search paths
-    # ------------------------------------------------------------------------
-
-    LDFLAGS.extend([
-        f"-L{PYTHON_LIB_DIR}",
+    LDFLAGS += [
+        f"-L{python_lib.parent}",
         f"-L{CONDA_LIB}",
-        f"-L{SUNDIALS_LIB_DIR}",
-    ])
-
-    # ------------------------------------------------------------------------
-    # Libraries
-    #
-    # Use the exact Python import library rather than:
-    #
-    #     -lpython
-    #
-    # This avoids Python 3.10/3.11/3.12/3.13/3.14 naming problems.
-    # ------------------------------------------------------------------------
-
-    LDLIBS.extend([
+        f"-L{SUNDIALS_LIB}",
+    ]
+    LDLIBS += [
         os.fspath(python_lib),
         "-ltbb",
-        *[f"-l{lib}" for lib in LIBRARIES],
-    ])
+        *(f"-l{x}" for x in LIBRARIES),
+    ]
 
+elif SYSTEM in {"Linux", "Darwin"}:
+    CXX = "g++" if SYSTEM == "Linux" else "clang++"
 
-# ============================================================================
-# macOS
-# ============================================================================
-
-elif IS_MACOS:
-
-    CXX = "clang++"
-
-    CXX_FLAGS.extend([
+    CXX_FLAGS += [
         "-fPIC",
         "-fvisibility=hidden",
-        "-dynamiclib",
-        "-undefined",
-        "dynamic_lookup",
-    ])
+        "-shared" if SYSTEM == "Linux" else "-dynamiclib",
+    ]
 
-    CMDSTAN_SUB_INCLUDES.extend([
-        (
-            "stan",
-            "lib",
-            "stan_math",
-            "lib",
-            "tbb_2020.3",
-            "include",
-        ),
-        (
-            "stan",
-            "lib",
-            "stan_math",
-            "lib",
-            "sundials_6.1.1",
-            "include",
-        ),
-        (
-            "stan",
-            "lib",
-            "stan_math",
-            "lib",
-            "sundials_6.1.1",
-            "src",
-            "sundials",
-        ),
-    ])
+    if SYSTEM == "Darwin":
+        CXX_FLAGS += ["-undefined", "dynamic_lookup"]
 
-    LDFLAGS.extend([
+    INCLUDE_PARTS += [
+        ("stan", "lib", "stan_math", "lib", "tbb_2020.3", "include"),
+        ("stan", "lib", "stan_math", "lib", "sundials_6.1.1", "include"),
+        ("stan", "lib", "stan_math", "lib", "sundials_6.1.1",
+         "src", "sundials"),
+    ]
+
+    LDFLAGS += [
         f"-L{TBB_DIR}",
-        f"-L{SUNDIALS_LIB_DIR}",
+        f"-L{SUNDIALS_LIB}",
         f"-Wl,-rpath,{TBB_DIR}",
-        f"-Wl,-rpath,{SUNDIALS_LIB_DIR}",
-    ])
+        f"-Wl,-rpath,{SUNDIALS_LIB}",
+    ]
 
-    tbb_library = TBB_DIR / "libtbb.dylib"
+    tbb = TBB_DIR / ("libtbb.dylib" if SYSTEM == "Darwin" else "libtbb.so.2")
+    if not tbb.exists():
+        raise RuntimeError(f"Could not find vendored TBB library: {tbb}")
 
-    if not tbb_library.exists():
-        raise RuntimeError(
-            f"Could not find vendored TBB library: {tbb_library}"
-        )
-
-    LDLIBS.extend([
-        os.fspath(tbb_library),
-        *[f"-l{lib}" for lib in LIBRARIES],
-    ])
-
-
-# ============================================================================
-# Linux
-# ============================================================================
-
-elif IS_LINUX:
-
-    CXX = "g++"
-
-    CXX_FLAGS.extend([
-        "-fPIC",
-        "-fvisibility=hidden",
-        "-shared",
-    ])
-
-    CMDSTAN_SUB_INCLUDES.extend([
-        (
-            "stan",
-            "lib",
-            "stan_math",
-            "lib",
-            "tbb_2020.3",
-            "include",
-        ),
-        (
-            "stan",
-            "lib",
-            "stan_math",
-            "lib",
-            "sundials_6.1.1",
-            "include",
-        ),
-        (
-            "stan",
-            "lib",
-            "stan_math",
-            "lib",
-            "sundials_6.1.1",
-            "src",
-            "sundials",
-        ),
-    ])
-
-    LDFLAGS.extend([
-        f"-L{TBB_DIR}",
-        f"-L{SUNDIALS_LIB_DIR}",
-        f"-Wl,-rpath,{TBB_DIR}",
-        f"-Wl,-rpath,{SUNDIALS_LIB_DIR}",
-    ])
-
-    # CmdStan 2.39 / TBB 2020.3
-    tbb_library = TBB_DIR / "libtbb.so.2"
-
-    if not tbb_library.exists():
-        raise RuntimeError(
-            f"Could not find vendored TBB library: {tbb_library}"
-        )
-
-    LDLIBS.extend([
-        os.fspath(tbb_library),
-        *[f"-l{lib}" for lib in LIBRARIES],
-    ])
-
+    LDLIBS += [os.fspath(tbb), *(f"-l{x}" for x in LIBRARIES)]
 
 else:
-
-    raise RuntimeError(
-        f"Unsupported operating system: {SYSTEM}"
-    )
+    raise RuntimeError(f"Unsupported operating system: {SYSTEM}")
 
 
-# ============================================================================
-# Include paths
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Compiler flags
+# ---------------------------------------------------------------------------
 
-CMDSTAN_INCLUDE_PATHS = [
-    os.fspath(CMDSTAN.joinpath(*sub))
-    for sub in CMDSTAN_SUB_INCLUDES
+INCLUDE_PATHS = [
+    os.fspath(CMDSTAN.joinpath(*parts))
+    for parts in INCLUDE_PARTS
 ]
 
 CPP_FLAGS = (
-    [f"-D{define}" for define in CPP_DEFINES]
-    + [
-        f"-I{path}"
-        for path in (
-            CMDSTAN_INCLUDE_PATHS
-            + OTHER_INCLUDES
-            + get_pybind_includes()
-        )
-    ]
+    [f"-D{x}" for x in CPP_DEFINES]
+    + [f"-I{x}" for x in INCLUDE_PATHS + EXTRA_INCLUDES + pybind_includes()]
 )
 
-
-# ============================================================================
-# Python extension suffix
-# ============================================================================
-
 EXT_SUFFIX = sysconfig.get_config_var("EXT_SUFFIX")
-
 if not EXT_SUFFIX:
-    raise RuntimeError(
-        "Could not determine Python extension suffix."
-    )
+    raise RuntimeError("Could not determine Python extension suffix.")
 
 
-# ============================================================================
-# Diagnostics
-# ============================================================================
-
-def _print_build_configuration():
-    """Print useful build information when compilation fails."""
-
+def _print_config():
     print(
-        "\n"
-        "========== pybind_stan_fns build configuration =========="
+        "\n========== pybind_stan_fns build configuration ==========\n"
+        f"Platform:          {SYSTEM}\n"
+        f"Architecture:      {platform.machine()}\n"
+        f"Python:            {sys.executable}\n"
+        f"Python version:    {platform.python_version()}\n"
+        f"Compiler:          {CXX}\n"
+        f"CmdStan:           {CMDSTAN}\n"
+        f"TBB directory:     {TBB_DIR}\n"
+        f"Extension suffix:  {EXT_SUFFIX}\n"
+        + (
+            f"Python library:    {python_lib}\n"
+            if SYSTEM == "Windows"
+            else ""
+        )
+        + "==========================================================\n"
     )
 
-    print(f"Platform:          {SYSTEM}")
-    print(f"Architecture:      {platform.machine()}")
-    print(f"Python executable: {sys.executable}")
-    print(f"Python version:    {platform.python_version()}")
-    print(f"Python prefix:     {sys.prefix}")
-    print(f"Compiler:          {CXX}")
-    print(f"CmdStan:           {CMDSTAN}")
-    print(f"TBB directory:     {TBB_DIR}")
-    print(f"Extension suffix:  {EXT_SUFFIX}")
-
-    if IS_WINDOWS:
-        print(f"Python library:    {python_lib}")
-
-    print(
-        "==========================================================\n"
-    )
-
-
-# ============================================================================
-# Build
-# ============================================================================
 
 def expose(file: str):
-    """
-    Compile a Stan file into a Python extension module.
+    """Compile a Stan file into a Python extension module."""
+    path = Path(file).resolve()
 
-    Parameters
-    ----------
-    file:
-        Path to the .stan file.
-    """
+    if not path.exists():
+        raise FileNotFoundError(f"Stan file does not exist: {path}")
 
-    file_path = Path(file).resolve()
+    cpp_pre = path.with_suffix(".cpp-pre")
+    cpp_file = path.with_suffix(".cpp")
+    extension = path.with_suffix(EXT_SUFFIX)
 
-    if not file_path.exists():
-        raise FileNotFoundError(
-            f"Stan file does not exist: {file_path}"
-        )
-
-    # ------------------------------------------------------------------------
-    # 1. Run stanc
-    # ------------------------------------------------------------------------
-
-    cpp_pre = file_path.with_suffix(".cpp-pre")
-
-    stanc_command = [
+    subprocess.run([
         os.fspath(STANC),
         "--standalone-functions",
-        f"--include-paths={file_path.parent}",
+        f"--include-paths={path.parent}",
         f"--o={cpp_pre}",
-        os.fspath(file_path),
-    ]
+        os.fspath(path),
+    ], check=True)
 
-    subprocess.run(
-        stanc_command,
-        check=True,
-    )
+    preprocess.preprocess(os.fspath(cpp_pre), out=os.fspath(cpp_file))
 
-    # ------------------------------------------------------------------------
-    # 2. Preprocess generated C++
-    # ------------------------------------------------------------------------
-
-    cpp_file = file_path.with_suffix(".cpp")
-
-    preprocess.preprocess(
-        os.fspath(cpp_pre),
-        out=os.fspath(cpp_file),
-    )
-
-    # ------------------------------------------------------------------------
-    # 3. Output extension
-    # ------------------------------------------------------------------------
-
-    extension_file = file_path.with_suffix(EXT_SUFFIX)
-
-    # ------------------------------------------------------------------------
-    # 4. Compile + link
-    # ------------------------------------------------------------------------
-
-    compile_command = (
-        [CXX]
-        + CXX_FLAGS
-        + CPP_FLAGS
-        + [
-            "-o",
-            os.fspath(extension_file),
-            os.fspath(cpp_file),
-        ]
-        + LDFLAGS
-        + LDLIBS
+    command = (
+        [CXX] + CXX_FLAGS + CPP_FLAGS +
+        ["-o", os.fspath(extension), os.fspath(cpp_file)] +
+        LDFLAGS + LDLIBS
     )
 
     print("\nBuild command:")
-    print(
-        " ".join(
-            shlex.quote(str(x))
-            for x in compile_command
-        )
-    )
-    print()
+    print(" ".join(shlex.quote(str(x)) for x in command))
 
     result = subprocess.run(
-        compile_command,
-        check=False,
+        command,
         capture_output=True,
         text=True,
     )
 
-    if result.returncode != 0:
-
-        _print_build_configuration()
-
+    if result.returncode:
+        _print_config()
         raise RuntimeError(
             "Build failed!\n\n"
-            "Command:\n"
-            + " ".join(
-                shlex.quote(str(x))
-                for x in compile_command
-            )
-            + "\n\n"
-            "stdout:\n"
-            + result.stdout
-            + "\n\n"
-            "stderr:\n"
-            + result.stderr
+            f"Command:\n{' '.join(shlex.quote(str(x)) for x in command)}\n\n"
+            f"stdout:\n{result.stdout}\n\n"
+            f"stderr:\n{result.stderr}"
         )
 
-    # ------------------------------------------------------------------------
-    # 5. Import generated module
-    # ------------------------------------------------------------------------
-
-    module_dir = os.fspath(file_path.parent)
-
+    module_dir = os.fspath(path.parent)
     if module_dir not in sys.path:
         sys.path.insert(0, module_dir)
 
-    return importlib.import_module(file_path.stem)
+    return importlib.import_module(path.stem)
