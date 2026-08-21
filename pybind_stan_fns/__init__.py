@@ -122,13 +122,11 @@ LDFLAGS = []
 LDLIBS = []
 
 
+# ===========================================================================
+# WINDOWS
+# ===========================================================================
+
 if IS_WINDOWS:
-    # -----------------------------------------------------------------------
-    # Windows
-    #
-    # Windows uses the Conda environment. Python extensions must be linked
-    # against Python's import library (e.g. python310.lib).
-    # -----------------------------------------------------------------------
 
     CXX = "clang++.exe"
 
@@ -136,6 +134,10 @@ if IS_WINDOWS:
         "_BOOST_LGAMMA",
         "TBB_INTERFACE_NEW",
     ])
+
+    # -----------------------------------------------------------------------
+    # Conda environment
+    # -----------------------------------------------------------------------
 
     conda_prefix = os.environ.get("CONDA_PREFIX")
 
@@ -147,58 +149,108 @@ if IS_WINDOWS:
 
     CONDA_PATH = Path(conda_prefix)
 
-    # Conda libraries/includes
     CONDA_INCLUDE = CONDA_PATH / "Library" / "include"
     CONDA_LIB = CONDA_PATH / "Library" / "lib"
 
-    OTHER_INCLUDES.append(
-        os.fspath(CONDA_INCLUDE)
-    )
+    OTHER_INCLUDES.append(os.fspath(CONDA_INCLUDE))
+
 
     # -----------------------------------------------------------------------
-    # Find Python import library.
+    # Find the Python import library
+    # -----------------------------------------------------------------------
     #
-    # With Conda on Windows this is normally:
+    # IMPORTANT:
     #
-    #     <CONDA_PREFIX>/libs/python310.lib
+    # Do not use sysconfig.get_config_var("LIBRARY") directly.
     #
-    # but we discover it instead of hard-coding the Python version.
+    # On Windows/Conda it may return:
+    #
+    #     python3.lib
+    #
+    # while the actual file is:
+    #
+    #     python312.lib
+    #
+    # or:
+    #
+    #     python310.lib
+    #
+    # We therefore construct the expected versioned name ourselves and
+    # verify that the file exists.
     # -----------------------------------------------------------------------
 
-    PYTHON_LIB_DIR = Path(
-        sysconfig.get_config_var("LIBDIR") or ""
+    python_version = (
+        f"python{sys.version_info.major}{sys.version_info.minor}.lib"
     )
+
+    python_lib_candidates = [
+        CONDA_PATH / "libs" / python_version,
+        Path(sys.prefix) / "libs" / python_version,
+        Path(sys.base_prefix) / "libs" / python_version,
+    ]
 
     python_lib = None
 
-    if PYTHON_LIB_DIR.exists():
-        candidates = sorted(PYTHON_LIB_DIR.glob("python*.lib"))
+    for candidate in python_lib_candidates:
+        if candidate.exists():
+            python_lib = candidate
+            break
 
-        if candidates:
-            python_lib = candidates[0]
+    # -----------------------------------------------------------------------
+    # Fallback: search the usual Python library directories.
+    # -----------------------------------------------------------------------
 
-    # Fallback for Conda if sysconfig does not report LIBDIR correctly.
     if python_lib is None:
-        conda_python_lib_dir = CONDA_PATH / "libs"
 
-        candidates = sorted(
-            conda_python_lib_dir.glob("python*.lib")
-        )
+        possible_dirs = [
+            CONDA_PATH / "libs",
+            Path(sys.prefix) / "libs",
+            Path(sys.base_prefix) / "libs",
+        ]
 
-        if candidates:
-            python_lib = candidates[0]
+        for directory in possible_dirs:
+            if not directory.exists():
+                continue
+
+            candidates = sorted(
+                directory.glob(
+                    f"python{sys.version_info.major}*.lib"
+                )
+            )
+
+            # Prefer the exact major/minor version.
+            exact = [
+                candidate
+                for candidate in candidates
+                if candidate.name.lower() == python_version.lower()
+            ]
+
+            if exact:
+                python_lib = exact[0]
+                break
+
+            if candidates:
+                python_lib = candidates[0]
+                break
+
 
     if python_lib is None:
         raise RuntimeError(
-            "Could not find Python import library. "
-            f"Expected something like "
-            f"{CONDA_PATH / 'libs' / 'pythonXY.lib'}"
+            "Could not find Python import library.\n"
+            f"Python: {sys.version}\n"
+            f"Expected: {python_version}\n"
+            f"Searched:\n"
+            + "\n".join(
+                f"  {path}"
+                for path in python_lib_candidates
+            )
         )
 
     PYTHON_LIB_DIR = python_lib.parent
 
+
     # -----------------------------------------------------------------------
-    # Linker search paths
+    # Windows linker paths
     # -----------------------------------------------------------------------
 
     LDFLAGS.extend([
@@ -207,32 +259,28 @@ if IS_WINDOWS:
         f"-L{SUNDIALS_LIB_DIR}",
     ])
 
+
     # -----------------------------------------------------------------------
-    # Libraries
+    # Windows libraries
+    # -----------------------------------------------------------------------
+    #
+    # Pass the Python import library using its ABSOLUTE PATH.
+    #
+    # This avoids clang trying to find a nonexistent "python3.lib".
     # -----------------------------------------------------------------------
 
     LDLIBS.extend([
-        python_lib.name,
+        os.fspath(python_lib),
         "-ltbb",
         *[f"-l{lib}" for lib in LIBRARIES],
     ])
 
 
+# ===========================================================================
+# MACOS
+# ===========================================================================
+
 elif IS_MACOS:
-    # -----------------------------------------------------------------------
-    # macOS
-    #
-    # Important:
-    #
-    # Python extension modules should NOT be linked against libpython on
-    # macOS. Python itself provides the Python C API symbols at load time.
-    #
-    # Therefore we use:
-    #
-    #     -undefined dynamic_lookup
-    #
-    # This is the standard pybind11/manual-extension approach.
-    # -----------------------------------------------------------------------
 
     CXX = "clang++"
 
@@ -244,6 +292,11 @@ elif IS_MACOS:
         "dynamic_lookup",
     ])
 
+
+    # -----------------------------------------------------------------------
+    # Additional CmdStan includes
+    # -----------------------------------------------------------------------
+
     CMDSTAN_SUB_INCLUDES.extend([
         (
             "stan",
@@ -272,24 +325,29 @@ elif IS_MACOS:
         ),
     ])
 
-    # Search paths.
+
+    # -----------------------------------------------------------------------
+    # Library search paths
+    # -----------------------------------------------------------------------
+
     LDFLAGS.extend([
         f"-L{TBB_DIR}",
         f"-L{SUNDIALS_LIB_DIR}",
-
-        # Make the extension find CmdStan's vendored libraries at runtime.
         f"-Wl,-rpath,{TBB_DIR}",
         f"-Wl,-rpath,{SUNDIALS_LIB_DIR}",
     ])
 
-    # Explicitly link CmdStan's TBB.
-    #
-    # Do NOT use -lpython here.
+
+    # -----------------------------------------------------------------------
+    # Vendored TBB
+    # -----------------------------------------------------------------------
+
     tbb_library = TBB_DIR / "libtbb.dylib"
 
     if not tbb_library.exists():
         raise RuntimeError(
-            f"Could not find vendored TBB library: {tbb_library}"
+            f"Could not find vendored TBB library:\n"
+            f"  {tbb_library}"
         )
 
     LDLIBS.extend([
@@ -298,10 +356,11 @@ elif IS_MACOS:
     ])
 
 
+# ===========================================================================
+# LINUX
+# ===========================================================================
+
 elif IS_LINUX:
-    # -----------------------------------------------------------------------
-    # Linux
-    # -----------------------------------------------------------------------
 
     CXX = "g++"
 
@@ -311,6 +370,11 @@ elif IS_LINUX:
         "-shared",
     ])
 
+
+    # -----------------------------------------------------------------------
+    # Additional CmdStan includes
+    # -----------------------------------------------------------------------
+
     CMDSTAN_SUB_INCLUDES.extend([
         (
             "stan",
@@ -339,6 +403,11 @@ elif IS_LINUX:
         ),
     ])
 
+
+    # -----------------------------------------------------------------------
+    # Library search paths
+    # -----------------------------------------------------------------------
+
     LDFLAGS.extend([
         f"-L{TBB_DIR}",
         f"-L{SUNDIALS_LIB_DIR}",
@@ -346,12 +415,17 @@ elif IS_LINUX:
         f"-Wl,-rpath,{SUNDIALS_LIB_DIR}",
     ])
 
-    # CmdStan 2.39 uses the old TBB 2020.3 library ABI.
+
+    # -----------------------------------------------------------------------
+    # CmdStan 2.39 TBB
+    # -----------------------------------------------------------------------
+
     tbb_library = TBB_DIR / "libtbb.so.2"
 
     if not tbb_library.exists():
         raise RuntimeError(
-            f"Could not find vendored TBB library: {tbb_library}"
+            f"Could not find vendored TBB library:\n"
+            f"  {tbb_library}"
         )
 
     LDLIBS.extend([
@@ -360,7 +434,12 @@ elif IS_LINUX:
     ])
 
 
+# ===========================================================================
+# Unsupported platform
+# ===========================================================================
+
 else:
+
     raise RuntimeError(
         f"Unsupported operating system: {SYSTEM}"
     )
@@ -405,18 +484,30 @@ if not EXT_SUFFIX:
 # ---------------------------------------------------------------------------
 
 def _print_build_configuration():
-    """Print useful build information when compilation fails."""
+    """Print useful information when compilation fails."""
 
-    print("\n========== pybind_stan_fns build configuration ==========")
-    print(f"Platform:        {SYSTEM}")
-    print(f"Architecture:    {platform.machine()}")
-    print(f"Python:          {sys.version}")
-    print(f"Python prefix:   {sys.prefix}")
-    print(f"Compiler:        {CXX}")
-    print(f"CmdStan:         {CMDSTAN}")
-    print(f"TBB directory:   {TBB_DIR}")
-    print(f"Extension suffix:{EXT_SUFFIX}")
-    print("==========================================================\n")
+    print(
+        "\n"
+        "========== pybind_stan_fns build configuration =========="
+    )
+
+    print(f"Platform:         {SYSTEM}")
+    print(f"Architecture:     {platform.machine()}")
+    print(f"Python:           {sys.version}")
+    print(f"Python executable:{sys.executable}")
+    print(f"Python prefix:    {sys.prefix}")
+    print(f"Compiler:         {CXX}")
+    print(f"CmdStan:          {CMDSTAN}")
+    print(f"TBB directory:    {TBB_DIR}")
+    print(f"SUNDIALS library: {SUNDIALS_LIB_DIR}")
+    print(f"Extension suffix: {EXT_SUFFIX}")
+
+    if IS_WINDOWS:
+        print(f"Python lib:       {python_lib}")
+
+    print(
+        "==========================================================\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +531,7 @@ def expose(file: str):
             f"Stan file does not exist: {file_path}"
         )
 
+
     # -----------------------------------------------------------------------
     # 1. Run stanc
     # -----------------------------------------------------------------------
@@ -459,6 +551,7 @@ def expose(file: str):
         check=True,
     )
 
+
     # -----------------------------------------------------------------------
     # 2. Preprocess generated C++
     # -----------------------------------------------------------------------
@@ -470,11 +563,13 @@ def expose(file: str):
         out=os.fspath(cpp_file),
     )
 
+
     # -----------------------------------------------------------------------
     # 3. Output extension
     # -----------------------------------------------------------------------
 
     extension_file = file_path.with_suffix(EXT_SUFFIX)
+
 
     # -----------------------------------------------------------------------
     # 4. Compile + link
@@ -493,9 +588,16 @@ def expose(file: str):
         + LDLIBS
     )
 
+
     print("\nBuild command:")
-    print(" ".join(shlex.quote(str(x)) for x in compile_command))
+    print(
+        " ".join(
+            shlex.quote(str(x))
+            for x in compile_command
+        )
+    )
     print()
+
 
     result = subprocess.run(
         compile_command,
@@ -504,28 +606,34 @@ def expose(file: str):
         text=True,
     )
 
+
     if result.returncode != 0:
+
         _print_build_configuration()
 
         raise RuntimeError(
             "Build failed!\n\n"
-            + "Command:\n"
+            "Command:\n"
             + " ".join(
                 shlex.quote(str(x))
                 for x in compile_command
             )
             + "\n\n"
-            + "stdout:\n"
+            "stdout:\n"
             + result.stdout
             + "\n\n"
-            + "stderr:\n"
+            "stderr:\n"
             + result.stderr
         )
+
 
     # -----------------------------------------------------------------------
     # 5. Import generated module
     # -----------------------------------------------------------------------
 
-    sys.path.insert(0, os.fspath(file_path.parent))
+    sys.path.insert(
+        0,
+        os.fspath(file_path.parent),
+    )
 
     return importlib.import_module(file_path.stem)
