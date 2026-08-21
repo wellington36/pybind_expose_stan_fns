@@ -72,10 +72,10 @@ if platform.system() == "Windows":
     OTHER_INCLUDES.append(
         os.fspath(CONDA_PATH / "Library" / "include")
     )
-	LDFLAGS = [
-	    f"-Wl,-L,{CMDSTAN}/stan/lib/stan_math/lib/tbb",
-	    f"-Wl,-L,{CMDSTAN}/stan/lib/stan_math/lib/sundials_6.1.1/lib",
-	    f"-Wl,-rpath,{CMDSTAN}/stan/lib/stan_math/lib/tbb",
+    LDFLAGS = [
+    	f"-Wl,-L,{CMDSTAN}/stan/lib/stan_math/lib/tbb",
+    	f"-Wl,-L,{CMDSTAN}/stan/lib/stan_math/lib/sundials_6.1.1/lib",
+    	f"-Wl,-rpath,{CMDSTAN}/stan/lib/stan_math/lib/tbb",
 	]
 
     # Windows uses the Conda TBB installation.
