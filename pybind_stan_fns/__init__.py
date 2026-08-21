@@ -126,8 +126,8 @@ if IS_WINDOWS:
     # -----------------------------------------------------------------------
     # Windows
     #
-    # Windows CI uses the Conda environment. TBB and SUNDIALS therefore
-    # come from Conda rather than CmdStan's vendored libraries.
+    # Windows uses the Conda environment. Python extensions must be linked
+    # against Python's import library (e.g. python310.lib).
     # -----------------------------------------------------------------------
 
     CXX = "clang++.exe"
@@ -142,31 +142,79 @@ if IS_WINDOWS:
     if not conda_prefix:
         raise RuntimeError(
             "CONDA_PREFIX is not set. "
-            "The Windows build requires the Conda environment."
+            "The Windows build requires a Conda environment."
         )
 
     CONDA_PATH = Path(conda_prefix)
 
+    # Conda libraries/includes
     CONDA_INCLUDE = CONDA_PATH / "Library" / "include"
     CONDA_LIB = CONDA_PATH / "Library" / "lib"
-    CONDA_BIN = CONDA_PATH / "Library" / "bin"
 
-    OTHER_INCLUDES.append(os.fspath(CONDA_INCLUDE))
+    OTHER_INCLUDES.append(
+        os.fspath(CONDA_INCLUDE)
+    )
 
-    # Conda clang++ uses the library directory with -L.
+    # -----------------------------------------------------------------------
+    # Find Python import library.
+    #
+    # With Conda on Windows this is normally:
+    #
+    #     <CONDA_PREFIX>/libs/python310.lib
+    #
+    # but we discover it instead of hard-coding the Python version.
+    # -----------------------------------------------------------------------
+
+    PYTHON_LIB_DIR = Path(
+        sysconfig.get_config_var("LIBDIR") or ""
+    )
+
+    python_lib = None
+
+    if PYTHON_LIB_DIR.exists():
+        candidates = sorted(PYTHON_LIB_DIR.glob("python*.lib"))
+
+        if candidates:
+            python_lib = candidates[0]
+
+    # Fallback for Conda if sysconfig does not report LIBDIR correctly.
+    if python_lib is None:
+        conda_python_lib_dir = CONDA_PATH / "libs"
+
+        candidates = sorted(
+            conda_python_lib_dir.glob("python*.lib")
+        )
+
+        if candidates:
+            python_lib = candidates[0]
+
+    if python_lib is None:
+        raise RuntimeError(
+            "Could not find Python import library. "
+            f"Expected something like "
+            f"{CONDA_PATH / 'libs' / 'pythonXY.lib'}"
+        )
+
+    PYTHON_LIB_DIR = python_lib.parent
+
+    # -----------------------------------------------------------------------
+    # Linker search paths
+    # -----------------------------------------------------------------------
+
     LDFLAGS.extend([
+        f"-L{PYTHON_LIB_DIR}",
         f"-L{CONDA_LIB}",
         f"-L{SUNDIALS_LIB_DIR}",
     ])
 
-    # TBB + SUNDIALS from Conda / CmdStan-compatible environment.
+    # -----------------------------------------------------------------------
+    # Libraries
+    # -----------------------------------------------------------------------
+
     LDLIBS.extend([
+        python_lib.name,
         "-ltbb",
         *[f"-l{lib}" for lib in LIBRARIES],
-    ])
-
-    CXX_FLAGS.extend([
-        "-DWIN32",
     ])
 
 
